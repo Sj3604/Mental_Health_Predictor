@@ -1,102 +1,304 @@
-const API = 'http://localhost:2200';
-const $ = id => document.getElementById(id);
-const sliders = ['usage','study','sleep','activity'];
-const setSlider = id => { $(id+'_o').textContent = $(id).value + ' h'; };
-sliders.forEach(id => { $(id).addEventListener('input', () => setSlider(id)); setSlider(id); });
+(() => {
+  "use strict";
 
-// API status check
-fetch(API + '/openapi.json').then(r => {
-  if(!r.ok) throw 0;
-  $('status').className = 'status on'; $('statusText').textContent = 'API online';
-}).catch(() => { $('status').className = 'status off'; $('statusText').textContent = 'API offline'; });
+  const API_BASE = "https://mansik-santulan-score.onrender.com";
 
-// sample profiles
-const profiles = {
-  balanced:{age:21,gender:'Female',country:'India',academic:'Undergraduate',platform:'Instagram',purpose:'Networking',usage:3,unlocks:40,study:5,sleep:7.5,activity:1.5,stress:'Low'},
-  heavy:{age:19,gender:'Male',country:'USA',academic:'Undergraduate',platform:'TikTok',purpose:'Entertainment',usage:8.5,unlocks:130,study:2,sleep:5,activity:0,stress:'Very High'},
-  focused:{age:24,gender:'Female',country:'Germany',academic:'Graduate',platform:'LinkedIn',purpose:'Education',usage:2,unlocks:25,study:7,sleep:7,activity:2,stress:'Medium'}
-};
-document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {
-  const p = profiles[c.dataset.p];
-  ['age','country','academic','platform','purpose','unlocks'].forEach(k => $(k).value = p[k]);
-  sliders.forEach(k => { $(k).value = p[k]; setSlider(k); });
-  document.querySelector(`input[name=gender][value="${p.gender}"]`).checked = true;
-  document.querySelector(`input[name=stress][value="${p.stress}"]`).checked = true;
-  $('form').requestSubmit();
-}));
+  const form = document.getElementById("predict-form");
+  const submitBtn = document.getElementById("submit-btn");
+  const resetBtn = document.getElementById("reset-btn");
+  const errorRetryBtn = document.getElementById("error-retry-btn");
 
-const bands = [
-  {max:5,   name:'Needs attention', color:'#ff5d8f', text:'The model expects lower wellbeing for this profile.'},
-  {max:6.5, name:'Moderate',        color:'#e59a1f', text:'A mixed picture. Sleep, activity and screen time all play a part.'},
-  {max:8,   name:'Good',            color:'#19b98b', text:'This profile points to healthy wellbeing.'},
-  {max:11,  name:'Strong',          color:'#19b98b', text:'This profile points to very strong wellbeing.'}
-];
+  const stateIdle = document.getElementById("state-idle");
+  const stateLoading = document.getElementById("state-loading");
+  const stateResult = document.getElementById("state-result");
+  const stateError = document.getElementById("state-error");
 
-function insights(d){
-  const out = [], G='#22d3c5', W='#ffb547', R='#ff5d8f';
-  if(d.sleep_hours_per_night < 6) out.push([R,`Sleep is short at ${d.sleep_hours_per_night} h a night.`]);
-  else if(d.sleep_hours_per_night >= 7) out.push([G,`Sleep of ${d.sleep_hours_per_night} h is in a healthy range.`]);
-  if(d.avg_daily_usage_hours >= 6) out.push([R,`${d.avg_daily_usage_hours} h of daily social media is high.`]);
-  else if(d.avg_daily_usage_hours <= 3) out.push([G,`Moderate use at ${d.avg_daily_usage_hours} h a day.`]);
-  if(d.daily_unlocks > 100) out.push([W,`${d.daily_unlocks} unlocks a day suggests frequent checking.`]);
-  if(d.physical_activity_hours < 0.5) out.push([W,'Very little physical activity.']);
-  else if(d.physical_activity_hours >= 1) out.push([G,'Regular physical activity.']);
-  if(d.stress_level === 'High' || d.stress_level === 'Very High') out.push([R,`Stress is reported as ${d.stress_level.toLowerCase()}.`]);
-  else if(d.stress_level === 'Low') out.push([G,'Stress is reported as low.']);
-  return out.slice(0,4);
-}
+  const scoreNumberEl = document.getElementById("score-number");
+  const scoreBandEl = document.getElementById("score-band");
+  const scoreContextEl = document.getElementById("score-context");
+  const gaugeFill = document.getElementById("gauge-fill");
+  const errorLabelEl = document.getElementById("error-label");
+  const errorCopyEl = document.getElementById("error-copy");
 
-function showResult(v, d){
-  const b = bands.find(x => v < x.max);
-  $('result').classList.remove('empty');
-  $('arc').style.strokeDashoffset = 503 * (1 - Math.max(0, Math.min(1, v/10)));
-  $('band').textContent = b.name; $('band').style.background = b.color;
-  $('msg').textContent = b.text;
-  const items = insights(d);
-  $('list').innerHTML = '';
-  items.forEach(([c,t]) => { const li = document.createElement('li'); li.style.setProperty('--c', c); li.textContent = t; $('list').appendChild(li); });
-  $('insights').classList.toggle('show', items.length > 0);
-  const t0 = performance.now();
-  (function tick(t){ const p = Math.min(1,(t-t0)/900); $('score').textContent = (v*p).toFixed(2); if(p<1) requestAnimationFrame(tick); })(t0);
-  if(window.innerWidth <= 920) $('result').scrollIntoView({behavior:'smooth',block:'center'});
-}
+  const GAUGE_ARC_LENGTH = 314; // approx pi * r(100)
 
-$('form').addEventListener('submit', async e => {
-  e.preventDefault();
-  const err = $('error'); err.classList.remove('show');
-  const d = {
-    age: parseInt($('age').value,10),
-    gender: document.querySelector('input[name=gender]:checked').value,
-    country: $('country').value.trim(),
-    academic_level: $('academic').value,
-    most_used_platform: $('platform').value,
-    purpose_of_use: $('purpose').value,
-    avg_daily_usage_hours: parseFloat($('usage').value),
-    daily_unlocks: parseInt($('unlocks').value,10),
-    study_hours: parseFloat($('study').value),
-    physical_activity_hours: parseFloat($('activity').value),
-    sleep_hours_per_night: parseFloat($('sleep').value),
-    stress_level: document.querySelector('input[name=stress]:checked').value
-  };
-  if(!d.country || isNaN(d.age) || isNaN(d.daily_unlocks)){
-    err.textContent = 'Enter age, country and phone unlocks before predicting.'; err.classList.add('show'); return;
+  // ---------------------------------------------------------
+  // Draw tick marks on both gauges (0..10, every 2 units)
+  // ---------------------------------------------------------
+  function drawTicks() {
+    document.querySelectorAll(".gauge-ticks").forEach((g) => {
+      g.innerHTML = "";
+      const cx = 120, cy = 140, rOuter = 100, rInner = 90;
+      for (let i = 0; i <= 10; i += 2) {
+        const angle = Math.PI - (i / 10) * Math.PI; // 180deg -> 0deg
+        const x1 = cx + rOuter * Math.cos(angle);
+        const y1 = cy - rOuter * Math.sin(angle);
+        const x2 = cx + rInner * Math.cos(angle);
+        const y2 = cy - rInner * Math.sin(angle);
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", x1.toFixed(1));
+        line.setAttribute("y1", y1.toFixed(1));
+        line.setAttribute("x2", x2.toFixed(1));
+        line.setAttribute("y2", y2.toFixed(1));
+        g.appendChild(line);
+      }
+    });
   }
-  const btn = $('btn'); btn.disabled = true; btn.textContent = 'Predicting…';
-  try{
-    const res = await fetch(API + '/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-    if(!res.ok){
-      let msg = 'The server rejected the request (' + res.status + ').';
-      try{ const j = await res.json(); if(Array.isArray(j.detail)) msg = j.detail.map(x => x.loc.slice(1).join('.') + ': ' + x.msg).join(' | '); }catch(_){}
-      throw new Error(msg);
+  drawTicks();
+
+  // ---------------------------------------------------------
+  // Segmented control (stress_level) wiring
+  // ---------------------------------------------------------
+  const segGroup = document.getElementById("stress_level_group");
+  const stressHiddenInput = document.getElementById("stress_level");
+  segGroup.querySelectorAll(".seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      segGroup.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      stressHiddenInput.value = btn.dataset.value;
+      clearFieldError(stressHiddenInput);
+    });
+  });
+
+  // ---------------------------------------------------------
+  // Field-level error helpers
+  // ---------------------------------------------------------
+  function fieldWrapper(input) {
+    return input.closest(".field");
+  }
+
+  function setFieldError(input, message) {
+    const wrap = fieldWrapper(input);
+    if (!wrap) return;
+    wrap.classList.add("field-error");
+    const msgEl = wrap.querySelector(".error-msg");
+    if (msgEl) msgEl.textContent = message;
+  }
+
+  function clearFieldError(input) {
+    const wrap = fieldWrapper(input);
+    if (!wrap) return;
+    wrap.classList.remove("field-error");
+    const msgEl = wrap.querySelector(".error-msg");
+    if (msgEl) msgEl.textContent = "";
+  }
+
+  function clearAllErrors() {
+    form.querySelectorAll(".field").forEach((f) => f.classList.remove("field-error"));
+    form.querySelectorAll(".error-msg").forEach((m) => (m.textContent = ""));
+  }
+
+  // ---------------------------------------------------------
+  // Client-side validation mirroring the StudentData model
+  // ---------------------------------------------------------
+  function validate(payload) {
+    const errors = [];
+
+    const numericChecks = [
+      ["age", 10, 100],
+      ["avg_daily_usage_hours", 0, 24],
+      ["daily_unlocks", 0, Infinity],
+      ["study_hours", 0, 24],
+      ["physical_activity_hours", 0, 24],
+      ["sleep_hours_per_night", 0, 24],
+    ];
+
+    numericChecks.forEach(([key, min, max]) => {
+      const input = document.getElementById(key);
+      const val = payload[key];
+      if (val === "" || val === null || Number.isNaN(val)) {
+        errors.push([input, "This field is required."]);
+      } else if (val < min || val > max) {
+        errors.push([input, `Must be between ${min} and ${max === Infinity ? "0+" : max}.`]);
+      }
+    });
+
+    ["gender", "country", "academic_level", "most_used_platform", "purpose_of_use"].forEach((key) => {
+      const input = document.getElementById(key);
+      if (!payload[key] || String(payload[key]).trim() === "") {
+        errors.push([input, "This field is required."]);
+      }
+    });
+
+    if (!payload.stress_level) {
+      errors.push([stressHiddenInput, "Pick a stress level."]);
     }
-    const data = await res.json();
-    $('status').className = 'status on'; $('statusText').textContent = 'API online';
-    showResult(data.predicted_mental_health_score, d);
-  }catch(ex){
-    err.textContent = ex instanceof TypeError ? 'Could not reach the API at ' + API + '. Start the FastAPI server on port 2200 and try again.' : ex.message;
-    err.classList.add('show');
-    if(ex instanceof TypeError){ $('status').className = 'status off'; $('statusText').textContent = 'API offline'; }
-  }finally{
-    btn.disabled = false; btn.textContent = 'Predict mental health score';
+
+    return errors;
   }
-});
+
+  // ---------------------------------------------------------
+  // Gather form data into the exact StudentData shape
+  // ---------------------------------------------------------
+  function collectPayload() {
+    const fd = new FormData(form);
+    return {
+      age: fd.get("age") === "" ? NaN : parseInt(fd.get("age"), 10),
+      gender: fd.get("gender") || "",
+      country: (fd.get("country") || "").trim(),
+      academic_level: fd.get("academic_level") || "",
+      most_used_platform: fd.get("most_used_platform") || "",
+      purpose_of_use: fd.get("purpose_of_use") || "",
+      avg_daily_usage_hours: fd.get("avg_daily_usage_hours") === "" ? NaN : parseFloat(fd.get("avg_daily_usage_hours")),
+      daily_unlocks: fd.get("daily_unlocks") === "" ? NaN : parseInt(fd.get("daily_unlocks"), 10),
+      study_hours: fd.get("study_hours") === "" ? NaN : parseFloat(fd.get("study_hours")),
+      physical_activity_hours: fd.get("physical_activity_hours") === "" ? NaN : parseFloat(fd.get("physical_activity_hours")),
+      sleep_hours_per_night: fd.get("sleep_hours_per_night") === "" ? NaN : parseFloat(fd.get("sleep_hours_per_night")),
+      stress_level: fd.get("stress_level") || "",
+    };
+  }
+
+  // ---------------------------------------------------------
+  // UI state switching
+  // ---------------------------------------------------------
+  function showState(name) {
+    [stateIdle, stateLoading, stateResult, stateError].forEach((el) => (el.hidden = true));
+    ({ idle: stateIdle, loading: stateLoading, result: stateResult, error: stateError }[name]).hidden = false;
+  }
+
+  function setSubmitting(isSubmitting) {
+    submitBtn.disabled = isSubmitting;
+    submitBtn.classList.toggle("loading", isSubmitting);
+  }
+
+  function bandFor(score) {
+    if (score < 4) {
+      return {
+        label: "Signal: strained",
+        context: "Your responses suggest elevated strain right now. Small shifts in sleep or screen time can go a long way.",
+      };
+    }
+    if (score < 7) {
+      return {
+        label: "Signal: balanced",
+        context: "Your rhythm looks fairly steady, with some room to recover and reset.",
+      };
+    }
+    return {
+      label: "Signal: strong",
+      context: "Your habits point to a well-supported, resilient baseline. Keep it up.",
+    };
+  }
+
+  function renderResult(score) {
+    const clamped = Math.max(0, Math.min(10, score));
+    const { label, context } = bandFor(clamped);
+
+    scoreNumberEl.textContent = score.toFixed(2);
+    scoreBandEl.textContent = label;
+    scoreContextEl.textContent = context;
+
+    // reset then animate the arc fill on next frame
+    gaugeFill.style.transition = "none";
+    gaugeFill.style.strokeDashoffset = String(GAUGE_ARC_LENGTH);
+    requestAnimationFrame(() => {
+      gaugeFill.style.transition = "";
+      const offset = GAUGE_ARC_LENGTH * (1 - clamped / 10);
+      gaugeFill.style.strokeDashoffset = String(offset);
+    });
+
+    showState("result");
+  }
+
+  function renderError(label, copy) {
+    errorLabelEl.textContent = label;
+    errorCopyEl.textContent = copy;
+    showState("error");
+  }
+
+  // ---------------------------------------------------------
+  // Parse FastAPI / Pydantic 422 error responses into
+  // field-level messages where possible
+  // ---------------------------------------------------------
+  function applyServerValidationErrors(detail) {
+    if (!Array.isArray(detail)) return false;
+    let matched = false;
+    detail.forEach((err) => {
+      const field = Array.isArray(err.loc) ? err.loc[err.loc.length - 1] : null;
+      const input = field ? document.getElementById(field) : null;
+      const target = field === "stress_level" ? stressHiddenInput : input;
+      if (target) {
+        setFieldError(target, err.msg || "Invalid value.");
+        matched = true;
+      }
+    });
+    return matched;
+  }
+
+  // ---------------------------------------------------------
+  // Submit handler
+  // ---------------------------------------------------------
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearAllErrors();
+
+    const payload = collectPayload();
+    const clientErrors = validate(payload);
+
+    if (clientErrors.length > 0) {
+      clientErrors.forEach(([input, msg]) => input && setFieldError(input, msg));
+      clientErrors[0][0]?.focus?.();
+      return;
+    }
+
+    setSubmitting(true);
+    showState("loading");
+
+    try {
+      const res = await fetch(`${API_BASE}/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.status === 422) {
+        const body = await res.json().catch(() => null);
+        const matched = body && applyServerValidationErrors(body.detail);
+        renderError(
+          "Check your inputs",
+          matched
+            ? "The API rejected a few fields — details are marked on the form."
+            : "The API rejected this submission. Please review your inputs and try again."
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        let detailMsg = `The API responded with status ${res.status}.`;
+        const body = await res.json().catch(() => null);
+        if (body && typeof body.detail === "string") detailMsg = body.detail;
+        renderError("Prediction failed", detailMsg);
+        return;
+      }
+
+      const data = await res.json();
+      if (typeof data.predicted_mental_health_score !== "number") {
+        renderError("Unexpected response", "The API responded, but the score was missing or malformed.");
+        return;
+      }
+
+      renderResult(data.predicted_mental_health_score);
+    } catch (err) {
+      renderError(
+        "Can't reach the server",
+        `Couldn't connect to ${API_BASE}. Make sure the backend is running (uvicorn main:app --port 2200 --reload) and reachable from this page.`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  });
+
+  // live-clear errors as the user edits
+  form.querySelectorAll("input, select").forEach((el) => {
+    el.addEventListener("input", () => clearFieldError(el));
+    el.addEventListener("change", () => clearFieldError(el));
+  });
+
+  resetBtn.addEventListener("click", () => {
+    showState("idle");
+  });
+
+  errorRetryBtn.addEventListener("click", () => {
+    showState("idle");
+  });
+})();
